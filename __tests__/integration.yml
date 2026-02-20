@@ -1,0 +1,57 @@
+# Integration test for the Refine Backlog GitHub Action.
+# This workflow runs in the action repo itself to self-test before releasing a new version.
+name: Test Action
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  validate:
+    name: Validate action.yml structure
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run structural validation
+        run: bash __tests__/validate-action.sh
+
+  integration:
+    name: Integration test (live API)
+    runs-on: ubuntu-latest
+    # Only run when the secret is available (skips on fork PRs)
+    if: ${{ secrets.REFINE_BACKLOG_KEY != '' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Refine test items
+        id: refine
+        uses: ./
+        with:
+          items: "Fix login bug\nAdd export to CSV feature\nImprove error messages"
+          gherkin: "true"
+          key: ${{ secrets.REFINE_BACKLOG_KEY }}
+
+      - name: Verify outputs
+        run: |
+          COUNT="${{ steps.refine.outputs.count }}"
+          echo "Items refined: $COUNT"
+          if [ "$COUNT" -lt "1" ]; then
+            echo "::error::Expected at least 1 refined item, got $COUNT"
+            exit 1
+          fi
+          echo "✅ Integration test passed — $COUNT items refined"
+
+      - name: Print first item title
+        run: |
+          echo '${{ steps.refine.outputs.refined }}' | node -e "
+            let d = '';
+            process.stdin.on('data', c => d += c);
+            process.stdin.on('end', () => {
+              const items = JSON.parse(d);
+              console.log('First item title:', items[0].title);
+              console.log('Estimate:', items[0].estimate);
+              console.log('Priority:', items[0].priority);
+            });
+          "

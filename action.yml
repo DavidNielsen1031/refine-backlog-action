@@ -1,0 +1,171 @@
+name: "Refine Backlog"
+description: "Transform messy backlog items into structured, actionable work items using AI"
+branding:
+  icon: "check-square"
+  color: "blue"
+
+inputs:
+  items:
+    description: "Backlog items to refine (newline-separated). Use either this OR file."
+    required: false
+  file:
+    description: "Path to a file containing backlog items (one per line)"
+    required: false
+  key:
+    description: "Refine Backlog license key. Can also be set via REFINE_BACKLOG_KEY env var."
+    required: false
+  user-stories:
+    description: "Add a user story title to each refined item"
+    required: false
+    default: "false"
+  gherkin:
+    description: "Write acceptance criteria in Given/When/Then format"
+    required: false
+    default: "false"
+  context:
+    description: "Project context to guide the AI (e.g. 'B2B SaaS, TypeScript, Agile team of 5')"
+    required: false
+  output-file:
+    description: "Write refined JSON output to this file path (e.g. refined.json)"
+    required: false
+  write-back:
+    description: "Write refined output back to the GitHub issue as a comment (requires issues: write permission)"
+    required: false
+    default: "false"
+
+outputs:
+  refined:
+    description: "JSON string of all refined backlog items"
+    value: ${{ steps.refine.outputs.refined }}
+  count:
+    description: "Number of items successfully refined"
+    value: ${{ steps.refine.outputs.count }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Set up Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: "20"
+
+    - name: Refine backlog items
+      id: refine
+      shell: bash
+      env:
+        REFINE_BACKLOG_KEY: ${{ inputs.key || env.REFINE_BACKLOG_KEY }}
+      run: |
+        set -e
+
+        # Build CLI argument list
+        ARGS="--format json"
+
+        if [ "${{ inputs.user-stories }}" = "true" ]; then
+          ARGS="$ARGS --user-stories"
+        fi
+        if [ "${{ inputs.gherkin }}" = "true" ]; then
+          ARGS="$ARGS --gherkin"
+        fi
+        if [ -n "${{ inputs.context }}" ]; then
+          ARGS="$ARGS --context ${{ inputs.context }}"
+        fi
+
+        # Handle inline items — write to temp file
+        if [ -n "${{ inputs.items }}" ]; then
+          ITEMS_FILE=$(mktemp)
+          printf '%s' "${{ inputs.items }}" > "$ITEMS_FILE"
+          ARGS="$ARGS --file $ITEMS_FILE"
+        elif [ -n "${{ inputs.file }}" ]; then
+          ARGS="$ARGS --file ${{ inputs.file }}"
+        else
+          echo "::error::Either 'items' or 'file' input is required."
+          exit 1
+        fi
+
+        # Run the CLI
+        echo "::group::Refine Backlog output"
+        REFINED=$(npx --yes refine-backlog-cli $ARGS)
+        EXIT_CODE=$?
+        echo "::endgroup::"
+
+        if [ $EXIT_CODE -ne 0 ]; then
+          echo "::error::refine-backlog-cli exited with code $EXIT_CODE"
+          exit 1
+        fi
+
+        # Parse item count
+        COUNT=$(echo "$REFINED" | node -e "
+          let data = '';
+          process.stdin.on('data', c => data += c);
+          process.stdin.on('end', () => {
+            try { console.log(JSON.parse(data).length); }
+            catch(e) { console.log(0); }
+          });
+        " 2>/dev/null || echo "0")
+
+        echo "✅ Refined $COUNT item(s)"
+
+        # Set outputs (encode newlines for GITHUB_OUTPUT)
+        {
+          echo "refined<<EOF"
+          echo "$REFINED"
+          echo "EOF"
+          echo "count=$COUNT"
+        } >> "$GITHUB_OUTPUT"
+
+        # Write to output file if specified
+        if [ -n "${{ inputs.output-file }}" ]; then
+          echo "$REFINED" > "${{ inputs.output-file }}"
+          echo "📄 Written to ${{ inputs.output-file }}"
+        fi
+
+    - name: Write back to issue
+      if: inputs.write-back == 'true' && github.event_name == 'issues'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        ISSUE_NUMBER="${{ github.event.issue.number }}"
+        REPO="${{ github.repository }}"
+
+        # Format refined items as a GitHub issue comment
+        COMMENT=$(echo '${{ steps.refine.outputs.refined }}' | node -e "
+          let data = '';
+          process.stdin.on('data', c => data += c);
+          process.stdin.on('end', () => {
+            const items = JSON.parse(data);
+            const lines = ['## 🤖 Refine Backlog Results', ''];
+            items.forEach((item, i) => {
+              lines.push(\`### \${i + 1}. \${item.title}\`);
+              lines.push('');
+              lines.push(\`**Priority:** \${item.priority}\`);
+              lines.push(\`**Estimate:** \${item.estimate}\`);
+              lines.push('');
+              lines.push(\`**Problem:** \${item.problem}\`);
+              lines.push('');
+              lines.push('**Acceptance Criteria:**');
+              item.acceptanceCriteria.forEach(ac => lines.push(\`- \${ac}\`));
+              if (item.userStory) {
+                lines.push('');
+                lines.push(\`**User Story:** \${item.userStory}\`);
+              }
+              if (item.tags?.length) {
+                lines.push('');
+                lines.push(\`**Tags:** \${item.tags.join(', ')}\`);
+              }
+              if (item.assumptions?.length) {
+                lines.push('');
+                lines.push('**Open Questions:**');
+                item.assumptions.forEach(a => lines.push(\`- \${a}\`));
+              }
+              lines.push('');
+              lines.push('---');
+              lines.push('');
+            });
+            lines.push('_Powered by [Refine Backlog](https://refinebacklog.com)_');
+            process.stdout.write(lines.join('\n'));
+          });
+        ")
+
+        gh issue comment "$ISSUE_NUMBER" --repo "$REPO" --body "$COMMENT"
+        echo "✅ Comment posted to issue #$ISSUE_NUMBER"
