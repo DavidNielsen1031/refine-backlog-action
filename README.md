@@ -36,6 +36,7 @@ Powered by [Refine Backlog](https://refinebacklog.com).
 |--------|-------------|
 | `refined` | JSON string of all refined backlog items |
 | `count` | Number of items refined |
+| `refined_file` | Path to a temp file containing the refined JSON (safe for downstream shell scripts — avoids quoting issues with apostrophes in text) |
 
 ---
 
