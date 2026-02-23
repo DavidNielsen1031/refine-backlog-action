@@ -82,7 +82,7 @@ runs:
           try {
             return fs.readFileSync(path, 'utf8')
               .slice(0, maxChars)
-              .replace(/[`\\\n\r]/g, ' ')
+              .replace(/[`\\\"'\n\r$!;|&]/g, ' ')
               .replace(/\s+/g, ' ')
               .trim();
           } catch(e) { return ''; }
@@ -209,7 +209,9 @@ runs:
         if (sourcesFile) {
           try { fs.writeFileSync(sourcesFile, sourceList); } catch(e) {}
         }
-        process.stdout.write(combined);
+        // Final sanitization pass: strip all chars that break shell eval
+        const safeCombined = combined.replace(/[`\\"'\n\r$!;|&]/g, ' ').replace(/\s+/g, ' ').trim();
+        process.stdout.write(safeCombined);
         DETECT_JSEOF
 
           RB_CONTEXT=$(node /tmp/rb-detect.js "$_RB_SOURCES_FILE" 2>/dev/null || echo "")
