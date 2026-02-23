@@ -83,8 +83,8 @@ runs:
             " 2>/dev/null || echo "")
           fi
           if [ -n "$AUTO_CONTEXT" ]; then
-            # Sanitize: strip backticks and backslashes that break shell eval
-            AUTO_CONTEXT=$(printf '%s' "$AUTO_CONTEXT" | tr -d '`\\')
+            # Sanitize: strip chars that break shell eval (backticks, backslashes, newlines)
+            AUTO_CONTEXT=$(printf '%s' "$AUTO_CONTEXT" | tr -d '`\\' | tr '\n' ' ')
             RB_CONTEXT="$AUTO_CONTEXT"
             echo "Auto-detected context from repo files (${#RB_CONTEXT} chars)"
           fi
