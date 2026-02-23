@@ -72,145 +72,145 @@ runs:
 
           # Write the detection script to a temp file (avoids heredoc quoting issues in YAML)
           cat << 'DETECT_JSEOF' > /tmp/rb-detect.js
-const fs = require('fs');
-const sourcesFile = process.argv[2];
-const parts = [];
-const sources = [];
-
-// Read a file safely: truncate, strip chars that break shell eval (backticks, backslashes, newlines)
-function readSafe(path, maxChars) {
-  try {
-    return fs.readFileSync(path, 'utf8')
-      .slice(0, maxChars)
-      .replace(/[`\\\n\r]/g, ' ')
-      .replace(/\s+/g, ' ')
-      .trim();
-  } catch(e) { return ''; }
-}
-
-// 1. AI agent files — take the FIRST found (highest signal), 400 chars
-const agentFiles = [
-  'AGENTS.md', 'CLAUDE.md', 'CODEX.md', 'GEMINI.md',
-  '.github/copilot-instructions.md', '.windsurfrules',
-  '.aider.conf.yml', 'llms.txt'
-];
-for (const f of agentFiles) {
-  if (fs.existsSync(f)) {
-    const chunk = readSafe(f, 400);
-    if (chunk) { parts.push(chunk); sources.push(f); break; }
-  }
-}
-
-// 2. Stack detection — smart extraction per file type, combine all hits
-const stackParts = [];
-
-// package.json: name + description + top 8 dep names
-if (fs.existsSync('package.json')) {
-  try {
-    const p = JSON.parse(fs.readFileSync('package.json', 'utf8'));
-    const deps = Object.keys({...(p.dependencies||{}), ...(p.devDependencies||{})}).slice(0, 8).join(', ');
-    const info = [p.name, p.description, deps ? 'deps: '+deps : ''].filter(Boolean).join('. ');
-    if (info) { stackParts.push(info); sources.push('package.json'); }
-  } catch(e) {}
-}
-
-// Framework/deploy presence signals (file existence = signal)
-if (['next.config.js','next.config.ts','next.config.mjs'].some(f => fs.existsSync(f))) {
-  stackParts.push('Next.js');
-  sources.push('next.config');
-}
-if (fs.existsSync('vercel.json')) { stackParts.push('Vercel'); sources.push('vercel.json'); }
-if (fs.existsSync('netlify.toml')) { stackParts.push('Netlify'); sources.push('netlify.toml'); }
-
-// Prisma schema — model names = product domain, very high signal
-if (fs.existsSync('prisma/schema.prisma')) {
-  try {
-    const schema = fs.readFileSync('prisma/schema.prisma', 'utf8').slice(0, 300);
-    const models = [...schema.matchAll(/model\s+(\w+)\s*\{/g)].map(m => m[1]);
-    if (models.length) { stackParts.push('Prisma models: '+models.join(', ')); sources.push('prisma/schema.prisma'); }
-  } catch(e) {}
-}
-
-// app.json / eas.json — Expo detection
-if (fs.existsSync('app.json')) {
-  try {
-    const a = JSON.parse(fs.readFileSync('app.json', 'utf8'));
-    const expo = a.expo || a;
-    const plat = Array.isArray(expo.platforms) ? 'platforms:'+expo.platforms.join('/') : '';
-    const info = ['Expo', expo.name, expo.slug, plat].filter(Boolean).join(', ');
-    stackParts.push(info); sources.push('app.json');
-  } catch(e) {}
-}
-
-// pyproject.toml — name + description only
-if (fs.existsSync('pyproject.toml')) {
-  try {
-    const c = fs.readFileSync('pyproject.toml', 'utf8');
-    const name = (c.match(/name\s*=\s*["']([^"']+)["']/) || [])[1];
-    const desc = (c.match(/description\s*=\s*["']([^"']+)["']/) || [])[1];
-    if (name||desc) { stackParts.push('Python: '+[name,desc].filter(Boolean).join(', ')); sources.push('pyproject.toml'); }
-  } catch(e) {}
-}
-
-// Cargo.toml — name + description
-if (fs.existsSync('Cargo.toml')) {
-  try {
-    const c = fs.readFileSync('Cargo.toml', 'utf8');
-    const name = (c.match(/^name\s*=\s*["']([^"']+)["']/m) || [])[1];
-    const desc = (c.match(/^description\s*=\s*["']([^"']+)["']/m) || [])[1];
-    if (name||desc) { stackParts.push('Rust: '+[name,desc].filter(Boolean).join(', ')); sources.push('Cargo.toml'); }
-  } catch(e) {}
-}
-
-// go.mod — module name only
-if (fs.existsSync('go.mod')) {
-  try {
-    const c = fs.readFileSync('go.mod', 'utf8');
-    const mod = (c.match(/^module\s+(\S+)/m) || [])[1];
-    if (mod) { stackParts.push('Go: '+mod); sources.push('go.mod'); }
-  } catch(e) {}
-}
-
-// pubspec.yaml — name + description (Flutter/Dart)
-if (fs.existsSync('pubspec.yaml')) {
-  try {
-    const c = fs.readFileSync('pubspec.yaml', 'utf8');
-    const name = (c.match(/^name:\s*(.+)/m) || [])[1];
-    const desc = (c.match(/^description:\s*(.+)/m) || [])[1];
-    if (name||desc) { stackParts.push('Flutter: '+[name,desc].filter(Boolean).join(', ').trim()); sources.push('pubspec.yaml'); }
-  } catch(e) {}
-}
-
-if (stackParts.length) parts.push(stackParts.join(' | '));
-
-// 3. Documentation — first 300 chars of README, 200 of CONTRIBUTING
-if (fs.existsSync('README.md')) {
-  const chunk = readSafe('README.md', 300);
-  if (chunk) { parts.push(chunk); sources.push('README.md'); }
-}
-if (fs.existsSync('CONTRIBUTING.md')) {
-  const chunk = readSafe('CONTRIBUTING.md', 200);
-  if (chunk) { parts.push(chunk); sources.push('CONTRIBUTING.md'); }
-}
-
-// 4. Team size from CODEOWNERS
-if (fs.existsSync('.github/CODEOWNERS')) {
-  try {
-    const c = fs.readFileSync('.github/CODEOWNERS', 'utf8');
-    const owners = new Set([...c.matchAll(/@([A-Za-z0-9_-]+)/g)].map(m => m[1]));
-    parts.push(owners.size <= 1 ? 'solo developer' : 'team of '+owners.size);
-    sources.push('CODEOWNERS');
-  } catch(e) {}
-}
-
-// Combine all hits, cap at 700 chars, write sources to file
-const combined = parts.join(' ').slice(0, 700);
-const sourceList = [...new Set(sources)].join(', ');
-if (sourcesFile) {
-  try { fs.writeFileSync(sourcesFile, sourceList); } catch(e) {}
-}
-process.stdout.write(combined);
-DETECT_JSEOF
+        const fs = require('fs');
+        const sourcesFile = process.argv[2];
+        const parts = [];
+        const sources = [];
+        
+        // Read a file safely: truncate, strip chars that break shell eval (backticks, backslashes, newlines)
+        function readSafe(path, maxChars) {
+          try {
+            return fs.readFileSync(path, 'utf8')
+              .slice(0, maxChars)
+              .replace(/[`\\\n\r]/g, ' ')
+              .replace(/\s+/g, ' ')
+              .trim();
+          } catch(e) { return ''; }
+        }
+        
+        // 1. AI agent files — take the FIRST found (highest signal), 400 chars
+        const agentFiles = [
+          'AGENTS.md', 'CLAUDE.md', 'CODEX.md', 'GEMINI.md',
+          '.github/copilot-instructions.md', '.windsurfrules',
+          '.aider.conf.yml', 'llms.txt'
+        ];
+        for (const f of agentFiles) {
+          if (fs.existsSync(f)) {
+            const chunk = readSafe(f, 400);
+            if (chunk) { parts.push(chunk); sources.push(f); break; }
+          }
+        }
+        
+        // 2. Stack detection — smart extraction per file type, combine all hits
+        const stackParts = [];
+        
+        // package.json: name + description + top 8 dep names
+        if (fs.existsSync('package.json')) {
+          try {
+            const p = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+            const deps = Object.keys({...(p.dependencies||{}), ...(p.devDependencies||{})}).slice(0, 8).join(', ');
+            const info = [p.name, p.description, deps ? 'deps: '+deps : ''].filter(Boolean).join('. ');
+            if (info) { stackParts.push(info); sources.push('package.json'); }
+          } catch(e) {}
+        }
+        
+        // Framework/deploy presence signals (file existence = signal)
+        if (['next.config.js','next.config.ts','next.config.mjs'].some(f => fs.existsSync(f))) {
+          stackParts.push('Next.js');
+          sources.push('next.config');
+        }
+        if (fs.existsSync('vercel.json')) { stackParts.push('Vercel'); sources.push('vercel.json'); }
+        if (fs.existsSync('netlify.toml')) { stackParts.push('Netlify'); sources.push('netlify.toml'); }
+        
+        // Prisma schema — model names = product domain, very high signal
+        if (fs.existsSync('prisma/schema.prisma')) {
+          try {
+            const schema = fs.readFileSync('prisma/schema.prisma', 'utf8').slice(0, 300);
+            const models = [...schema.matchAll(/model\s+(\w+)\s*\{/g)].map(m => m[1]);
+            if (models.length) { stackParts.push('Prisma models: '+models.join(', ')); sources.push('prisma/schema.prisma'); }
+          } catch(e) {}
+        }
+        
+        // app.json / eas.json — Expo detection
+        if (fs.existsSync('app.json')) {
+          try {
+            const a = JSON.parse(fs.readFileSync('app.json', 'utf8'));
+            const expo = a.expo || a;
+            const plat = Array.isArray(expo.platforms) ? 'platforms:'+expo.platforms.join('/') : '';
+            const info = ['Expo', expo.name, expo.slug, plat].filter(Boolean).join(', ');
+            stackParts.push(info); sources.push('app.json');
+          } catch(e) {}
+        }
+        
+        // pyproject.toml — name + description only
+        if (fs.existsSync('pyproject.toml')) {
+          try {
+            const c = fs.readFileSync('pyproject.toml', 'utf8');
+            const name = (c.match(/name\s*=\s*["']([^"']+)["']/) || [])[1];
+            const desc = (c.match(/description\s*=\s*["']([^"']+)["']/) || [])[1];
+            if (name||desc) { stackParts.push('Python: '+[name,desc].filter(Boolean).join(', ')); sources.push('pyproject.toml'); }
+          } catch(e) {}
+        }
+        
+        // Cargo.toml — name + description
+        if (fs.existsSync('Cargo.toml')) {
+          try {
+            const c = fs.readFileSync('Cargo.toml', 'utf8');
+            const name = (c.match(/^name\s*=\s*["']([^"']+)["']/m) || [])[1];
+            const desc = (c.match(/^description\s*=\s*["']([^"']+)["']/m) || [])[1];
+            if (name||desc) { stackParts.push('Rust: '+[name,desc].filter(Boolean).join(', ')); sources.push('Cargo.toml'); }
+          } catch(e) {}
+        }
+        
+        // go.mod — module name only
+        if (fs.existsSync('go.mod')) {
+          try {
+            const c = fs.readFileSync('go.mod', 'utf8');
+            const mod = (c.match(/^module\s+(\S+)/m) || [])[1];
+            if (mod) { stackParts.push('Go: '+mod); sources.push('go.mod'); }
+          } catch(e) {}
+        }
+        
+        // pubspec.yaml — name + description (Flutter/Dart)
+        if (fs.existsSync('pubspec.yaml')) {
+          try {
+            const c = fs.readFileSync('pubspec.yaml', 'utf8');
+            const name = (c.match(/^name:\s*(.+)/m) || [])[1];
+            const desc = (c.match(/^description:\s*(.+)/m) || [])[1];
+            if (name||desc) { stackParts.push('Flutter: '+[name,desc].filter(Boolean).join(', ').trim()); sources.push('pubspec.yaml'); }
+          } catch(e) {}
+        }
+        
+        if (stackParts.length) parts.push(stackParts.join(' | '));
+        
+        // 3. Documentation — first 300 chars of README, 200 of CONTRIBUTING
+        if (fs.existsSync('README.md')) {
+          const chunk = readSafe('README.md', 300);
+          if (chunk) { parts.push(chunk); sources.push('README.md'); }
+        }
+        if (fs.existsSync('CONTRIBUTING.md')) {
+          const chunk = readSafe('CONTRIBUTING.md', 200);
+          if (chunk) { parts.push(chunk); sources.push('CONTRIBUTING.md'); }
+        }
+        
+        // 4. Team size from CODEOWNERS
+        if (fs.existsSync('.github/CODEOWNERS')) {
+          try {
+            const c = fs.readFileSync('.github/CODEOWNERS', 'utf8');
+            const owners = new Set([...c.matchAll(/@([A-Za-z0-9_-]+)/g)].map(m => m[1]));
+            parts.push(owners.size <= 1 ? 'solo developer' : 'team of '+owners.size);
+            sources.push('CODEOWNERS');
+          } catch(e) {}
+        }
+        
+        // Combine all hits, cap at 700 chars, write sources to file
+        const combined = parts.join(' ').slice(0, 700);
+        const sourceList = [...new Set(sources)].join(', ');
+        if (sourcesFile) {
+          try { fs.writeFileSync(sourcesFile, sourceList); } catch(e) {}
+        }
+        process.stdout.write(combined);
+        DETECT_JSEOF
 
           RB_CONTEXT=$(node /tmp/rb-detect.js "$_RB_SOURCES_FILE" 2>/dev/null || echo "")
           if [ -n "$RB_CONTEXT" ]; then
