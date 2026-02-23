@@ -65,6 +65,29 @@ runs:
       run: |
         set -e
 
+        # Auto-detect context if not provided explicitly
+        if [ -z "$RB_CONTEXT" ]; then
+          AUTO_CONTEXT=""
+          for f in AGENTS.md CLAUDE.md CURSOR.md .cursorrules README.md; do
+            if [ -f "$f" ]; then
+              AUTO_CONTEXT=$(head -c 600 "$f")
+              break
+            fi
+          done
+          # package.json fallback
+          if [ -z "$AUTO_CONTEXT" ] && [ -f "package.json" ]; then
+            AUTO_CONTEXT=$(node -e "
+              const p = require('./package.json');
+              const deps = Object.keys(p.dependencies || {}).slice(0, 10).join(', ');
+              console.log([p.name, p.description, deps ? 'deps: ' + deps : ''].filter(Boolean).join('. '));
+            " 2>/dev/null || echo "")
+          fi
+          if [ -n "$AUTO_CONTEXT" ]; then
+            RB_CONTEXT="$AUTO_CONTEXT"
+            echo "Auto-detected context from repo files (${#RB_CONTEXT} chars)"
+          fi
+        fi
+
         # Build CLI argument list
         ARGS="--format json"
 
